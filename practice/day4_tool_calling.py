@@ -40,7 +40,7 @@ def get_weather(city: str) -> str:
 
 # --- 2. 绑定工具 (Bind Tools) ---
 # 初始化模型
-llm = ChatOllama(model="qwen2.5:72b-instruct-q4_K_M", temperature=0)
+llm = ChatOllama(model="qwen2.5:72b-instruct-q3_K_M", temperature=0)
 
 # 将工具列表“挂载”给 LLM
 # 这行代码会让 Qwen 知道它有了这两个技能
@@ -94,9 +94,59 @@ print("\n" + "=" * 30 + "\n")
 # 在实际开发中，我们通常不会像上面那样手写循环，而是用 langgraph 的 prebuilt 节点
 # 但今天我们先手动跑通流程，理解原理最重要。
 
-print("--- 测试 2: 多步推理 ---")
-# 试着问一个需要调用两个工具的问题 (虽然现在的简单 Loop 可能处理不了多步，但看看 Qwen 的反应)
+print("--- 测试 2: 多步/多工具推理 (完整手动闭环) ---")
+
 query2 = "上海现在的天气怎么样？另外算一下 10 加 20 是多少。"
+messages2 = [HumanMessage(content=query2)]
+
+# 1. 第一轮调用：模型规划 (Planning)
 print(f"用户提问: {query2}")
-ai_msg2 = llm_with_tools.invoke([HumanMessage(content=query2)])
-print(f"模型想要调用的工具: {ai_msg2.tool_calls}")
+ai_msg2 = llm_with_tools.invoke(messages2)
+
+# 把模型生成的“我想调用工具”这条消息，必须先加到历史记录里！
+# 否则后面你直接塞 ToolMessage，模型会因上下文断裂而报错：“我没让你调工具啊，你给我结果干嘛？”
+messages2.append(ai_msg2)
+
+print(f"模型规划结果 (tool_calls): {ai_msg2.tool_calls}")
+
+# 2. 中间处理：执行所有工具 (Execution Loop)
+if ai_msg2.tool_calls:
+    print("--- 开始执行工具列表 ---")
+
+    # 定义可用工具映射表 (方便查找)
+    available_tools = {
+        "add": add,
+        "get_weather": get_weather
+    }
+
+    # 遍历所有工具调用 (Qwen 可能会一次性返回两个：查天气 和 算加法)
+    for tool_call in ai_msg2.tool_calls:
+        tool_name = tool_call["name"]
+        tool_args = tool_call["args"]
+        tool_id = tool_call["id"]
+
+        # 找到对应的函数
+        action_function = available_tools.get(tool_name)
+
+        if action_function:
+            # 执行函数
+            print(f"正在执行: {tool_name} 参数: {tool_args}")
+            tool_result = action_function.invoke(tool_args)
+
+            # 构造 ToolMessage
+            tool_msg = ToolMessage(
+                tool_call_id=tool_id,  # 必须对应 ID，不然模型不知道这是哪个工具的结果
+                content=str(tool_result),
+                name=tool_name
+            )
+
+            # 将结果加入历史记录
+            messages2.append(tool_msg)
+            print(f"结果已回填: {tool_result}")
+
+# 3. 最终轮调用：生成回答 (Final Generation)
+print("--- 工具执行完毕，请求最终回复 ---")
+# 现在的 messages2 里包含了：[用户问题, AI规划(ToolCall), 工具结果1, 工具结果2]
+final_response = llm_with_tools.invoke(messages2)
+
+print(f"\n最终回复: {final_response.content}")

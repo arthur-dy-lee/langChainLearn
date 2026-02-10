@@ -17,7 +17,7 @@ class UserInfo(BaseModel):
 
 # 2. 初始化模型
 # Qwen 2.5 对 JSON 格式的支持非常好
-llm = ChatOllama(model="qwen2.5:72b-instruct-q4_K_M", temperature=0)
+llm = ChatOllama(model="qwen2.5:72b-instruct-q3_K_M", temperature=0)
 
 # 3. 关键步骤：绑定结构化输出
 # 这行代码的魔法在于：它会自动修改 Prompt，告诉模型“必须输出符合 UserInfo 定义的 JSON”

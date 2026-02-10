@@ -44,7 +44,7 @@ vectorstore = Chroma.from_documents(documents=splits, embedding=embeddings)
 retriever = vectorstore.as_retriever(search_kwargs={"k": 1})
 
 # --- 4. 构建 RAG 链 (The Chain) ---
-llm = ChatOllama(model="qwen2.5:72b-instruct-q4_K_M")
+llm = ChatOllama(model="qwen2.5:72b-instruct-q3_K_M")
 
 # 定义 Prompt: 关键在于 {context} 占位符
 template = """你是一个智能助手。请严格基于下面的【上下文】回答问题。
