@@ -19,7 +19,7 @@ prompt = ChatPromptTemplate.from_messages([
     ("user", "请解释一下什么是 {topic}，并给出一个简单的应用场景。")
 ])
 
-# 3. 组装链 (Chain) - 这就是 LCEL 的核心
+# 3. 组装链 (Chain) - 这就是 LCEL 的核心， LCEL 的全称是 LangChain Expression Language（LangChain 表达式语言）
 # 逻辑流向：Prompt输入 -> 模型处理 -> 结果解析为纯文本
 chain = prompt | llm | StrOutputParser()
 

@@ -2,6 +2,7 @@ import sys
 from typing import Annotated, Literal, TypedDict
 
 # 导入必要的库
+# 如果这里报错，请确保 pip install langgraph langchain-ollama
 from langchain_ollama import ChatOllama
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage
@@ -11,7 +12,7 @@ from langgraph.prebuilt import ToolNode
 
 
 # ==========================================
-# 1. 定义工具 (Tools) - Agent 的能力
+# 1. 定义工具 (Tools)
 # ==========================================
 @tool
 def add(a: int, b: int) -> int:
@@ -22,9 +23,13 @@ def add(a: int, b: int) -> int:
 
 @tool
 def get_weather(city: str) -> str:
-    """查询指定城市的天气。"""
+    """
+    查询指定城市的天气。
+    注意：如果用户输入的是中文城市名，请务必将其转换为对应的汉语拼音 (Pinyin) 再调用此工具。
+    例如：'上海' -> 'shanghai'。
+    """
+    # 同时匹配中文和拼音
     print(f"    [工具日志] 正在查询 {city} 的天气...")
-    # 模拟 API 返回
     if "shanghai" in city.lower():
         return "晴天, 25°C"
     elif "beijing" in city.lower():
@@ -36,85 +41,77 @@ def get_weather(city: str) -> str:
 tools = [add, get_weather]
 
 # ==========================================
-# 2. 初始化模型 (Model) - Agent 的大脑
+# 2. 初始化模型 (Model)
 # ==========================================
 # 使用你本地的 Qwen 模型
 llm = ChatOllama(model="qwen2.5:72b-instruct-q3_K_M", temperature=0)
 
-# 关键步骤：告诉模型有哪些工具可用
+# 关键步骤：绑定工具
 llm_with_tools = llm.bind_tools(tools)
 
 
 # ==========================================
-# 3. 定义状态 (State) - Agent 的记忆
+# 3. 定义状态 (State)
 # ==========================================
-# 这是 LangGraph 最核心的概念。
-# 我们定义一个字典，里面包含一个 'messages' 列表。
-# Annotated[list, add_messages] 的意思是：
-# 当节点返回新的 message 时，LangGraph 会自动把它 append (追加) 到列表末尾，而不是覆盖旧数据。
 class AgentState(TypedDict):
+    # add_messages: 当有新消息时，追加到列表，而不是覆盖
     messages: Annotated[list, add_messages]
 
 
 # ==========================================
-# 4. 定义节点 (Nodes) - 流程中的步骤
+# 4. 定义节点 (Nodes)
 # ==========================================
 
 # 节点 A: 思考 (Call Model)
-# 它的工作是：看一眼历史记录(state)，然后调用 LLM 生成下一步计划
 def call_model(state: AgentState):
     messages = state['messages']
     response = llm_with_tools.invoke(messages)
-    # 返回的内容会被 add_messages 自动追加到 state['messages'] 中
     return {"messages": [response]}
 
 
 # 节点 B: 执行工具 (Tool Node)
-# LangGraph 提供了一个现成的节点，它会自动扫描上一步 LLM 生成的 tool_calls 并执行
 tool_node = ToolNode(tools)
 
 
 # ==========================================
-# 5. 定义边 (Edges) - 流程的逻辑跳转
+# 5. 定义逻辑跳转 (Edges)
 # ==========================================
 
-# 条件判断逻辑：决定 LLM 思考完之后去哪里
+# 判断逻辑：决定 LLM 思考完之后去哪里
 def should_continue(state: AgentState) -> Literal["tools", END]:
     messages = state['messages']
     last_message = messages[-1]
 
-    # 如果 LLM 决定调用工具 (tool_calls 列表不为空) -> 跳转到 'tools' 节点
+    # 2. 定义转换规则 (如果是红灯，就停；如果是绿灯，就走)
     if last_message.tool_calls:
-        return "tools"
+        return "tools"  # 规则 A: AI 想调工具 ->以此状态跳转到 Tools 节点
 
-    # 否则 (LLM 认为任务结束了，输出了最终文本) -> 结束流程
+    # 否则 -> 结束
     return END
 
 
 # ==========================================
-# 6. 组装图 (Graph Construction)
+# 6. 组装图 (Graph)
 # ==========================================
 workflow = StateGraph(AgentState)
 
 # 6.1 添加节点
-workflow.add_node("agent", call_model)  # 这里的名字 'agent' 可以随便取
+workflow.add_node("agent", call_model)
 workflow.add_node("tools", tool_node)
 
-# 6.2 设置入口点 (Start)
+# 6.2 设置入口
 workflow.add_edge(START, "agent")
 
-# 6.3 添加条件边 (Conditional Edge)
-# 从 'agent' 节点出来后，根据 should_continue 的返回值决定去哪
+# 6.3 添加条件边 (Agent 跑完后去哪？)
 workflow.add_conditional_edges(
     "agent",
     should_continue,
 )
 
-# 6.4 添加普通边 (Normal Edge)
-# 工具执行完后，必须跳回 'agent'，让 LLM 看看工具的结果，然后决定下一步
+# 6.4 添加普通边 (工具跑完后，必须回 Agent)
 workflow.add_edge("tools", "agent")
 
-# 6.5 编译图 (Compile)
+# 6.5 编译
 app = workflow.compile()
 
 # ==========================================
@@ -128,23 +125,32 @@ if __name__ == "__main__":
     print(f"用户提问: {query}\n")
 
     inputs = {"messages": [HumanMessage(content=query)]}
-
-    # stream_mode="values" 会打印每次状态更新后的完整 message 列表
+    i = 0
     try:
+        # stream_mode="values" 会打印每一步的状态
+        """
+        messages = [
+                        HumanMessage(...),   # 0: 用户提问
+                        AIMessage(...),      # 1: AI 决定调两个工具
+                        ToolMessage(天气),   # 2: 天气工具的结果 (倒数第二个)
+                        ToolMessage(加法)    # 3: 加法工具的结果 (倒数第一个) [-1]
+                    ]
+        """
         for event in app.stream(inputs, stream_mode="values"):
-            # event["messages"] 包含了当前所有的对话历史
+            i += 1
             last_msg = event["messages"][-1]
 
-            # 为了输出清晰，我们只打印最新的一步
+            # 为了输出清晰，只打印最新的一步
             step_type = type(last_msg).__name__
-            print(f"--- 状态更新 ({step_type}) ---")
+
+            print(f"\n--- 第 {i} 步: {step_type}, last_msg:{last_msg} ---")
 
             if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
-                print(f"🤖 AI 计划: 准备调用工具 {last_msg.tool_calls}")
-            elif hasattr(last_msg, 'content') and last_msg.content:
-                print(f"📝 AI 回复: {last_msg.content}")
+                print(f"🤖 [AI 决策] 计划调用工具: {last_msg.tool_calls}")
             elif step_type == "ToolMessage":
-                print(f"🔧 工具结果: {last_msg.content}")
+                print(f"🔧 [工具结果] {last_msg.content}")
+            elif hasattr(last_msg, 'content') and last_msg.content:
+                print(f"📝 [AI 回复] {last_msg.content}")
 
         print("\n✅ 流程结束")
 
